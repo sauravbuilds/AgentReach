@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from _lib import db
-from _lib.search import MAX_DAYS, SOURCES, parse_window, search_all
+from _lib.search import MAX_DAYS, SOURCES, active_engine, parse_window, search_all
 from _lib.summarize import summarize
 
 MAX_MESSAGE_CHARS = 500
@@ -78,6 +78,7 @@ def health():
         "sources": list(SOURCES),
         "persistent_storage": db.is_persistent(),
         "database": "postgres" if db.using_postgres() else ("sqlite" if db.is_persistent() else "temporary"),
+        "search_engine": active_engine(),
         "database_variable": db.postgres_variable_name(),  # the variable's name only, never its value
     }
 
@@ -160,14 +161,14 @@ def _send_message(chat_id: int, body: NewMessage, request: Request, x_client_id:
         if cached:
             data = json.loads(cached)
             results, checked, used_ai, errors = data["results"], data["checked"], data["ai"], {}
-            interpreted, newest_seen = data.get("interpreted", []), data.get("newest_seen")
+            interpreted, newest_seen, engine = data.get("interpreted", []), data.get("newest_seen"), data.get("engine")
         else:
             db.log_search(owner, ip)  # only real searches count toward the limit, cache hits are free
             found = search_all(topic, days)
             if not found["results"] and len(found["errors"]) == len(SOURCES):
                 raise RuntimeError("; ".join(found["errors"].values()))
             results, checked, errors = found["results"], found["checked"], found["errors"]
-            interpreted, newest_seen = found.get("interpreted", []), found.get("newest_seen")
+            interpreted, newest_seen, engine = found.get("interpreted", []), found.get("newest_seen"), found.get("engine")
             used_ai = summarize(results)
             for r in results:
                 r.pop("_full", None)
@@ -175,7 +176,7 @@ def _send_message(chat_id: int, body: NewMessage, request: Request, x_client_id:
                 db.cache_put(
                     key,
                     json.dumps(
-                        {"results": results, "checked": checked, "ai": used_ai, "interpreted": interpreted, "newest_seen": newest_seen}
+                        {"results": results, "checked": checked, "ai": used_ai, "interpreted": interpreted, "newest_seen": newest_seen, "engine": engine}
                     ),
                 )
         meta = {
@@ -187,6 +188,7 @@ def _send_message(chat_id: int, body: NewMessage, request: Request, x_client_id:
             "source_errors": errors,
             "interpreted": interpreted,
             "newest_seen": newest_seen,
+            "engine": engine,
             "results": results,
         }
         if results:

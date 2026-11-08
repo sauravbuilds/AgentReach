@@ -28,7 +28,7 @@ function Message({ m }) {
     <div className={`msg ${m.role}`}>
       <div className="bubble">{m.content}</div>
       {meta?.days && m.role === "assistant" && (
-        <div className="note">Window: last {meta.days} days{meta.checked ? ` · ${meta.checked} posts checked` : ""}</div>
+        <div className="note">Window: last {meta.days} days{meta.checked ? ` · ${meta.checked} posts checked` : ""}{meta.engine ? ` · via ${meta.engine}` : ""}</div>
       )}
       {meta?.interpreted?.map((i) => (
         <div key={i.term} className="note"><strong>{i.term}</strong>: {i.meaning}</div>
@@ -170,7 +170,13 @@ export default function App() {
             </div>
           ))}
         </div>
-        <div className="sidebar-note">Your chats are saved in this browser and are private to you.</div>
+        <div className="sidebar-note">
+          <div>Your chats are saved in this browser and are private to you.</div>
+          <div className="credit">
+            Search powered by{" "}
+            <a href="https://github.com/Panniantong/Agent-Reach" target="_blank" rel="noopener noreferrer">Agent Reach</a>, an open-source tool.
+          </div>
+        </div>
       </aside>
 
       <main className="main">

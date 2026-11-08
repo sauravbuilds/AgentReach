@@ -1,3 +1,5 @@
 fastapi>=0.115
 psycopg[binary]>=3.2
 anthropic>=0.40
+# Agent Reach: open-source (MIT) web access CLI, https://github.com/Panniantong/Agent-Reach
+agent-reach @ https://github.com/Panniantong/Agent-Reach/releases/download/v1.6.1/agent_reach-1.6.1-py3-none-any.whl

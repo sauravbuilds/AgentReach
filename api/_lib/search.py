@@ -1,5 +1,6 @@
 """Reddit discussion search through Exa's free hosted search (plain HTTP: no login, no CLI, no key)."""
 import json
+import os
 import re
 import time
 import urllib.error
@@ -7,7 +8,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from datetime import datetime, timedelta, timezone
 
-from . import glossary
+from . import agentreach, glossary
 
 MAX_DAYS = 90
 DEFAULT_DAYS = 90
@@ -170,6 +171,26 @@ def _parse_date(value: str | None) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
+# SEARCH_ENGINE=agent-reach (default) uses the open-source Agent Reach CLI and falls back to calling Exa
+# directly if Agent Reach is missing or fails on the host. SEARCH_ENGINE=exa skips Agent Reach.
+def _engine_setting() -> str:
+    return os.environ.get("SEARCH_ENGINE", "agent-reach").strip().lower()
+
+
+def active_engine() -> str:
+    return agentreach.LABEL if _engine_setting() != "exa" and agentreach.available() else "Exa"
+
+
+def _run_query(query: str) -> tuple[list[dict], str]:
+    """Search once. Returns (items, engine label that produced them)."""
+    if _engine_setting() != "exa" and agentreach.available():
+        try:
+            return agentreach.search_reddit(query, FETCH_LIMIT), agentreach.LABEL
+        except Exception:
+            pass  # fall back to calling the search service directly
+    return _exa_search(query), "Exa"
+
+
 def _month_labels(days: int) -> list[str]:
     """"November 2026", "October 2026", ... for each month the window touches (at most 3)."""
     now = datetime.now(timezone.utc)
@@ -206,15 +227,17 @@ def search_reddit(topic: str, days: int) -> dict:
 
     def attempt(q: str):
         try:
-            return _exa_search(q), None
+            items, engine = _run_query(q)
+            return items, None, engine
         except Exception as exc:  # keep going if one query fails
-            return [], str(exc)
+            return [], str(exc), None
 
     with ThreadPoolExecutor(max_workers=len(queries)) as pool:
         outcomes = list(pool.map(attempt, queries))
     seen: dict[str, dict] = {}
-    errors = [err for _, err in outcomes if err]
-    for items, err in outcomes:
+    errors = [err for _, err, _ in outcomes if err]
+    engines = sorted({e for _, _, e in outcomes if e})
+    for items, err, _ in outcomes:
         if err:
             continue
         for item in items:
@@ -261,6 +284,7 @@ def search_reddit(topic: str, days: int) -> dict:
         "days": days,
         "interpreted": ctx.interpreted(),
         "newest_seen": newest_seen,
+        "engine": " + ".join(engines) if engines else None,
     }
 
 
@@ -277,6 +301,7 @@ def search_all(topic: str, days: int) -> dict:
     checked = 0
     interpreted: dict[str, str] = {}
     newest: list[str] = []
+    engines: list[str] = []
     errors: dict[str, str] = {}
     deadline = time.monotonic() + SOURCE_DEADLINE
     for name, fut in futures.items():
@@ -292,6 +317,8 @@ def search_all(topic: str, days: int) -> dict:
         checked += found["checked"]
         if found.get("newest_seen"):
             newest.append(found["newest_seen"])
+        if found.get("engine"):
+            engines.append(found["engine"])
         for item in found.get("interpreted", []):
             interpreted.setdefault(item["term"], item["meaning"])
     results.sort(key=lambda r: r["published_at"], reverse=True)
@@ -302,4 +329,5 @@ def search_all(topic: str, days: int) -> dict:
         "errors": errors,
         "interpreted": [{"term": t, "meaning": m} for t, m in interpreted.items()],
         "newest_seen": max(newest) if newest else None,
+        "engine": " + ".join(dict.fromkeys(engines)) if engines else None,
     }

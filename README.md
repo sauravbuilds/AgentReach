@@ -21,6 +21,7 @@ Terms it knows include: RNOR, ROR, NRI, OCI, PIO, NRE, NRO, FCNR, FEMA, DTAA, TR
 ## Good to know
 
 - **Reddit only for now.** X / Twitter is being built and will be added later.
+- **Built on open source.** Searches run through [Agent Reach](https://github.com/Panniantong/Agent-Reach), an open-source (MIT) tool that gives programs access to the web.
 - **Results can lag behind Reddit.** The search source updates with a delay, so the newest posts may not show up yet.
 - **Your history is private to your browser.** There is no account or login. Chats are tied to the browser you use, so clearing your browser data or switching to another device starts a fresh history.
 - **Searches are limited** so the service stays available for everyone: a handful per minute and a daily cap per person. Repeating a search you or someone else just made is instant and does not count.
