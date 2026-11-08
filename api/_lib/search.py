@@ -8,7 +8,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from datetime import datetime, timedelta, timezone
 
-from . import agentreach, glossary
+from . import agentreach, feed, glossary
 
 MAX_DAYS = 90
 DEFAULT_DAYS = 90
@@ -22,7 +22,7 @@ USER_AGENT = "DiscussionFinder/1.0"
 _NUMBER_WORDS = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6}
 _UNIT_DAYS = {"day": 1, "week": 7, "month": 30}
 _WINDOW_RE = re.compile(
-    r"\b(?:in\s+the\s+|within\s+the\s+|from\s+the\s+|in\s+|within\s+|from\s+)?"
+    r"\b(?:in\s+the\s+|within\s+the\s+|from\s+the\s+|for\s+the\s+|in\s+|within\s+|from\s+|for\s+)?"
     r"(?:last|past|previous)\s+(?:(\d+|a|an|one|two|three|four|five|six)\s+)?(day|week|month)s?\b",
     re.IGNORECASE,
 )
@@ -40,22 +40,40 @@ _POST_HEADER_RE = re.compile(
 )
 
 
+_COUNT = r"\d+|one|two|three|four|five|six"
+# "RNOR 15 days", "RNOR in 2 weeks": a bare duration at the END of the text. Only the end, so a topic such as
+# "30 days of fitness" is left alone.
+_BARE_RE = re.compile(
+    rf"(?:\b(?:in|within|for|over)\s+(?:the\s+)?)?(?:\b(?:last|past)\s+)?({_COUNT})\s*(day|week|month)s?\s*$", re.IGNORECASE
+)
+_KEYWORD_RE = re.compile(r"\b(today|yesterday|this\s+week|this\s+month)\b", re.IGNORECASE)
+_KEYWORD_DAYS = {"today": 1, "yesterday": 2, "this week": 7, "this month": 30}
+
+
+def _to_count(raw: str | None) -> int:
+    if raw is None:
+        return 1
+    return int(raw) if raw.isdigit() else _NUMBER_WORDS[raw.lower()]
+
+
 def parse_window(text: str) -> tuple[str, int, bool]:
     """Return (topic without the date phrase, days, capped).
 
     "budgeting app last 2 weeks" -> ("budgeting app", 14, False). No phrase means DEFAULT_DAYS.
+    Also understands "RNOR 15 days", "RNOR in 2 weeks", "RNOR today" and "RNOR this week".
     """
     match = _WINDOW_RE.search(text)
-    if not match:
-        return text.strip(), DEFAULT_DAYS, False
-    count_raw, unit = match.group(1), match.group(2).lower()
-    if count_raw is None:
-        count = 1
-    elif count_raw.isdigit():
-        count = int(count_raw)
+    if match:
+        days = max(1, _to_count(match.group(1))) * _UNIT_DAYS[match.group(2).lower()]
     else:
-        count = _NUMBER_WORDS[count_raw.lower()]
-    days = max(1, count) * _UNIT_DAYS[unit]
+        match = _BARE_RE.search(text)
+        if match:
+            days = max(1, _to_count(match.group(1))) * _UNIT_DAYS[match.group(2).lower()]
+        else:
+            match = _KEYWORD_RE.search(text)
+            if not match:
+                return text.strip(), DEFAULT_DAYS, False
+            days = _KEYWORD_DAYS[re.sub(r"\s+", " ", match.group(1).lower())]
     topic = (text[: match.start()] + " " + text[match.end():]).strip(" ,.-")
     capped = days > MAX_DAYS
     return topic or text.strip(), min(days, MAX_DAYS), capped
@@ -232,11 +250,27 @@ def search_reddit(topic: str, days: int) -> dict:
         except Exception as exc:  # keep going if one query fails
             return [], str(exc), None
 
-    with ThreadPoolExecutor(max_workers=len(queries)) as pool:
+    def fresh() -> tuple[list[dict], str]:
+        """Current posts straight from Reddit's feed, when it lets us in. Never raises.
+        The status is "off", "ok" or "unavailable"."""
+        if not feed.enabled():
+            return [], "off"
+        try:
+            return feed.search(topic, days), "ok"
+        except feed.FeedUnavailable:
+            return [], "unavailable"
+
+    with ThreadPoolExecutor(max_workers=len(queries) + 1) as pool:
+        fresh_future = pool.submit(fresh)
         outcomes = list(pool.map(attempt, queries))
+        fresh_items, fresh_status = fresh_future.result()
     seen: dict[str, dict] = {}
+    for item in fresh_items:  # first, so the current copy of a post wins when both sources return it
+        url = item.get("url")
+        if url and _REDDIT_URL_RE.match(url):
+            seen.setdefault(url, item)
     errors = [err for _, err, _ in outcomes if err]
-    engines = sorted({e for _, _, e in outcomes if e})
+    engines = sorted({e for _, _, e in outcomes if e} | ({"Reddit feed"} if fresh_items else set()))
     for items, err, _ in outcomes:
         if err:
             continue
@@ -285,6 +319,7 @@ def search_reddit(topic: str, days: int) -> dict:
         "interpreted": ctx.interpreted(),
         "newest_seen": newest_seen,
         "engine": " + ".join(engines) if engines else None,
+        "fresh": fresh_status,
     }
 
 
@@ -302,6 +337,7 @@ def search_all(topic: str, days: int) -> dict:
     interpreted: dict[str, str] = {}
     newest: list[str] = []
     engines: list[str] = []
+    fresh_states: list[str] = []
     errors: dict[str, str] = {}
     deadline = time.monotonic() + SOURCE_DEADLINE
     for name, fut in futures.items():
@@ -319,6 +355,7 @@ def search_all(topic: str, days: int) -> dict:
             newest.append(found["newest_seen"])
         if found.get("engine"):
             engines.append(found["engine"])
+        fresh_states.append(found.get("fresh", "off"))
         for item in found.get("interpreted", []):
             interpreted.setdefault(item["term"], item["meaning"])
     results.sort(key=lambda r: r["published_at"], reverse=True)
@@ -330,4 +367,5 @@ def search_all(topic: str, days: int) -> dict:
         "interpreted": [{"term": t, "meaning": m} for t, m in interpreted.items()],
         "newest_seen": max(newest) if newest else None,
         "engine": " + ".join(dict.fromkeys(engines)) if engines else None,
+        "fresh": "unavailable" if "unavailable" in fresh_states else ("ok" if "ok" in fresh_states else "off"),
     }

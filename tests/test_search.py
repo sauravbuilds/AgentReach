@@ -174,3 +174,25 @@ def test_only_https_reddit_post_links_are_accepted(monkeypatch):
     items.append({"url": "https://old.reddit.com/r/x/comments/2/b/", "title": "ok", "text": "", "published_at": now})
     monkeypatch.setattr(search, "_exa_search", lambda q, *a: items)
     assert [r["url"] for r in search.search_reddit("t", 7)["results"]] == ["https://old.reddit.com/r/x/comments/2/b/"]
+
+
+@pytest.mark.parametrize(
+    "text, topic, days, capped",
+    [
+        ("RNOR 15 days", "RNOR", 15, False),
+        ("RNOR 2 weeks", "RNOR", 14, False),
+        ("RNOR in 10 days", "RNOR", 10, False),
+        ("RNOR for the last 3 days", "RNOR", 3, False),
+        ("RNOR two weeks", "RNOR", 14, False),
+        ("RNOR 4 months", "RNOR", MAX_DAYS, True),
+        ("RNOR today", "RNOR", 1, False),
+        ("RNOR this week", "RNOR", 7, False),
+        ("RNOR this month", "RNOR", 30, False),
+        ("RNOR yesterday", "RNOR", 2, False),
+        ("30 days of fitness", "30 days of fitness", DEFAULT_DAYS, False),
+        ("best 7 days itinerary tokyo", "best 7 days itinerary tokyo", DEFAULT_DAYS, False),
+        ("RNOR last 7 days", "RNOR", 7, False),
+    ],
+)
+def test_parse_window_bare_durations_and_keywords(text, topic, days, capped):
+    assert parse_window(text) == (topic, days, capped)

@@ -190,3 +190,19 @@ def test_health_reports_the_variable_name_but_never_the_value(client, monkeypatc
     body = client.get("/api/health").json()
     assert "ep-example" not in str(body) and "pw" not in str(body.get("database_variable"))
     assert body["database_variable"] == "STORAGE_DATABASE_URL"
+
+
+def test_results_are_not_cached_when_the_live_feed_was_refused(client, monkeypatch):
+    calls = []
+
+    def search_with_feed_down(topic, days):
+        calls.append(1)
+        return {"results": [_result()], "checked": 1, "days": days, "errors": {}, "fresh": "unavailable" if len(calls) == 1 else "ok"}
+
+    monkeypatch.setattr(index, "search_all", search_with_feed_down)
+    cid = _chat(client)
+    _send(client, cid, "rnor last 7 days")
+    _send(client, cid, "rnor last 7 days")  # must search again: the first answer was missing the live feed
+    assert len(calls) == 2
+    _send(client, cid, "rnor last 7 days")  # the second answer was complete, so now it is cached
+    assert len(calls) == 2

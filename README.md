@@ -18,7 +18,7 @@ Short terms like **RNOR**, **NRE**, **NRO**, **OCI** or **FEMA** are easy to con
 ## Good to know
 
 - **Reddit only for now.** X / Twitter is coming later.
-- **Results can lag behind Reddit**, so the newest posts may not appear yet.
+- **Very recent posts may be missing at busy moments**, because Reddit limits how often it can be asked for the latest ones. Results show "via" which sources answered.
 - **Your history stays in your browser.** There is no login, so clearing browser data or switching device starts a fresh history.
 - **Searches are rate-limited** to keep the service available for everyone. Repeating a recent search is instant.
 - **Descriptions are unverified excerpts** and Reddit comments are opinions, not advice. For tax, legal or money decisions, check with a qualified professional.

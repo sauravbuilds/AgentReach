@@ -26,6 +26,7 @@ def test_adapter_runs_the_cli_and_normalises_items(monkeypatch):
     items = agentreach.search_reddit("rnor site:reddit.com", 50)
     assert items == [{"title": "T", "url": "https://www.reddit.com/r/x/comments/1/t/", "author": "u", "published_at": "2026-01-01", "text": ""}]
     assert "public-web" in seen["cmd"] and "reddit" in seen["cmd"] and "--limit" in seen["cmd"]
+    assert seen["cmd"][-2:] == ["--", "rnor site:reddit.com"]  # the search text always comes after the "--" separator
 
 
 def test_adapter_redirects_state_to_tmp_on_vercel(monkeypatch):

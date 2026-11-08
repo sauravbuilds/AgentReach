@@ -23,7 +23,7 @@ For whoever hosts or develops the app. Visitors only need the [README](README.md
 Optional environment variables (Project Settings, Environment Variables): `SEARCH_ENGINE=exa` to skip Agent Reach and call Exa directly (the default is Agent Reach). `ANTHROPIC_API_KEY` for AI summaries (costs money per search), `SUMMARY_MODEL`.
 
 ## Known limits to be aware of
-- **Freshness.** The free Exa index of Reddit lags by weeks (at the time of writing its newest posts were about five weeks old). Short windows such as "last 7 days" will often return nothing. Fixing it needs a live source, such as Reddit's official API with an app registered at reddit.com/prefs/apps.
+- **Freshness.** The main search source (Exa, also behind Agent Reach's no-login Reddit route) lags by weeks. To cover recent days the app also asks Reddit's public search feed (`api/_lib/feed.py`). Reddit allows that feed only about one request per 30 seconds per IP address and may refuse hosting providers outright, so it is a best-effort layer: used when Reddit answers, skipped quietly (with a cooldown) when it does not. A result set says "via Agent Reach + Reddit feed" when the feed contributed. On Vercel the shared IP may be refused often, in which case searches fall back to the lagging source. The reliable fix is Reddit's official API (free app at reddit.com/prefs/apps, two keys). Set `FRESH_FEED=off` to disable the feed.
 - **Rate limits.** The free Exa endpoint refuses bursts. Each search makes at most 3 calls and retries once when it is told it is busy. Heavy traffic needs a paid Exa key or another source.
 - **No accounts.** History is per browser; it cannot follow a person across devices.
 - **X / Twitter** is not part of the hosted app. See `ROADMAP.md`.

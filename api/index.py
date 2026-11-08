@@ -172,7 +172,8 @@ def _send_message(chat_id: int, body: NewMessage, request: Request, x_client_id:
             used_ai = summarize(results)
             for r in results:
                 r.pop("_full", None)
-            if not errors:  # never cache a partial result; a retry should try the failed source again
+            # Never cache a partial result: a retry should try the failed source (or the live feed) again.
+            if not errors and found.get("fresh") != "unavailable":
                 db.cache_put(
                     key,
                     json.dumps(

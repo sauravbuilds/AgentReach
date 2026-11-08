@@ -30,7 +30,8 @@ def _env() -> dict:
 def search_reddit(query: str, limit: int) -> list[dict]:
     cmd = [
         sys.executable, "-c", "from agent_reach.cli import main; main()",
-        "reddit", "search", query, "--limit", str(limit), "--backend", "public-web",
+        "reddit", "search", "--limit", str(limit), "--backend", "public-web",
+        "--", query,  # "--" ends option parsing, so text starting with "-" is never read as an option
     ]
     try:
         proc = subprocess.run(cmd, capture_output=True, timeout=TIMEOUT, env=_env())

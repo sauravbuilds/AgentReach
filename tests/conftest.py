@@ -9,3 +9,4 @@ os.environ["DB_PATH"] = os.path.join(tempfile.mkdtemp(), "test.db")
 
 # Unit tests never start the real Agent Reach process; tests that need it opt in explicitly.
 os.environ["SEARCH_ENGINE"] = "exa"
+os.environ["FRESH_FEED"] = "off"  # tests never call Reddit; tests that need the feed mock it
