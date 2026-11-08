@@ -4,14 +4,36 @@ Uses Postgres when DATABASE_URL (or POSTGRES_URL) is set, which is what a hosted
 Without it, falls back to a local SQLite file so the app runs on a laptop with no setup.
 """
 import os
+import re
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
+_URL_VAR_RE = re.compile(r"(?:^|_)(?:DATABASE|POSTGRES)_URL$")
+
+
+def _pg_env_var() -> str | None:
+    """Name of the environment variable holding the Postgres connection string, if any.
+
+    Prefers the plain names, then accepts any prefixed one (Vercel can add a prefix such as STORAGE_ when a
+    database is connected, giving STORAGE_DATABASE_URL). Pooled URLs are preferred over unpooled ones.
+    """
+    for name in ("DATABASE_URL", "POSTGRES_URL"):
+        if os.environ.get(name, "").startswith(("postgres://", "postgresql://")):
+            return name
+    candidates = [
+        k for k, v in os.environ.items()
+        if _URL_VAR_RE.search(k) and v.startswith(("postgres://", "postgresql://")) and "UNPOOLED" not in k and "NON_POOLING" not in k
+    ]
+    return sorted(candidates)[0] if candidates else None
+
+
 def _pg_url() -> str:
-    return os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_URL") or ""
+    name = _pg_env_var()
+    return os.environ[name] if name else ""
 
 
 def _sqlite_path() -> str:
@@ -21,6 +43,14 @@ def _sqlite_path() -> str:
     if os.environ.get("VERCEL"):
         return "/tmp/chats.db"  # temporary disk: history is lost on restart. Set DATABASE_URL for real storage.
     return str(Path(__file__).resolve().parents[2] / "chats.db")
+
+
+def using_postgres() -> bool:
+    return bool(_pg_url())
+
+
+def postgres_variable_name() -> str | None:
+    return _pg_env_var()
 
 
 def is_persistent() -> bool:
@@ -68,11 +98,37 @@ def _ddl(pg: bool) -> list[str]:
         f"""CREATE TABLE IF NOT EXISTS search_log (
             id {pk}, owner TEXT NOT NULL, ip TEXT NOT NULL, created_at TEXT NOT NULL)""",
         "CREATE INDEX IF NOT EXISTS search_log_idx ON search_log (created_at)",
-    ]
+    ] + (
+        # Hosts like Supabase expose public tables over a web API. Row-level security with no policies
+        # blocks that API from reading these tables; the app itself connects directly and is not affected.
+        [f"ALTER TABLE {t} ENABLE ROW LEVEL SECURITY" for t in ("chats", "messages", "search_cache", "search_log")]
+        if pg
+        else []
+    )
+
+
+_local = threading.local()
 
 
 @contextmanager
 def connect():
+    """Open a connection. Nested calls on the same thread reuse the outer one, so wrapping a whole request
+    in `with db.connect():` gives it a single connection (each new connection to a hosted Postgres costs
+    a network round trip or more)."""
+    shared = getattr(_local, "conn", None)
+    if shared is not None:
+        yield shared
+        return
+    with _open() as conn:
+        _local.conn = conn
+        try:
+            yield conn
+        finally:
+            _local.conn = None
+
+
+@contextmanager
+def _open():
     url = _pg_url()
     if url:
         import psycopg

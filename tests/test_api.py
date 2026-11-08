@@ -158,3 +158,35 @@ def test_internal_errors_are_not_shown_to_visitors(client, monkeypatch):
     msg = _send(client, cid, "ynab").json()["message"]
     assert "neon" not in msg["content"] and "neon" not in msg["meta"]["error"]
     assert "Something went wrong" in msg["content"]
+
+
+PG = "postgresql://user:pw@ep-example.neon.tech/db?sslmode=require"
+
+
+def test_postgres_connection_string_is_found_under_any_vercel_name(monkeypatch):
+    names = ("DATABASE_URL", "POSTGRES_URL", "STORAGE_DATABASE_URL", "STORAGE_POSTGRES_URL", "STORAGE_DATABASE_URL_UNPOOLED", "NEON_DATABASE_URL")
+    for n in names:
+        monkeypatch.delenv(n, raising=False)
+    assert db._pg_env_var() is None and not db.using_postgres()
+    monkeypatch.setenv("STORAGE_DATABASE_URL_UNPOOLED", PG + "&unpooled=1")  # unpooled alone is not used
+    assert db._pg_env_var() is None
+    monkeypatch.setenv("STORAGE_DATABASE_URL", PG)
+    assert db._pg_env_var() == "STORAGE_DATABASE_URL" and db._pg_url() == PG
+    monkeypatch.setenv("POSTGRES_URL", PG)  # plain names win over prefixed ones
+    assert db._pg_env_var() == "POSTGRES_URL"
+    monkeypatch.setenv("DATABASE_URL", PG)
+    assert db._pg_env_var() == "DATABASE_URL"
+
+
+def test_non_postgres_values_are_ignored(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "not-a-url")
+    monkeypatch.setenv("STORAGE_DATABASE_URL", "mysql://x")
+    assert db._pg_env_var() is None
+
+
+def test_health_reports_the_variable_name_but_never_the_value(client, monkeypatch):
+    monkeypatch.setenv("STORAGE_DATABASE_URL", PG)
+    monkeypatch.setattr(db, "_pg_url", lambda: "")  # keep the tests on SQLite
+    body = client.get("/api/health").json()
+    assert "ep-example" not in str(body) and "pw" not in str(body.get("database_variable"))
+    assert body["database_variable"] == "STORAGE_DATABASE_URL"

@@ -3,11 +3,12 @@ import logging
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -72,7 +73,13 @@ class RenameChat(BaseModel):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "sources": list(SOURCES), "persistent_storage": db.is_persistent()}
+    return {
+        "ok": True,
+        "sources": list(SOURCES),
+        "persistent_storage": db.is_persistent(),
+        "database": "postgres" if db.using_postgres() else ("sqlite" if db.is_persistent() else "temporary"),
+        "database_variable": db.postgres_variable_name(),  # the variable's name only, never its value
+    }
 
 
 @app.get("/api/chats")
@@ -122,7 +129,15 @@ def _check_rate_limit(owner: str, ip: str) -> None:
 
 
 @app.post("/api/chats/{chat_id}/messages")
-def send_message(chat_id: int, body: NewMessage, request: Request, x_client_id: str | None = Header(default=None)):
+def send_message(chat_id: int, body: NewMessage, request: Request, response: Response, x_client_id: str | None = Header(default=None)):
+    started = time.monotonic()
+    with db.connect():  # one database connection for the whole request
+        result = _send_message(chat_id, body, request, x_client_id)
+    response.headers["Server-Timing"] = f"total;dur={(time.monotonic() - started) * 1000:.0f}"
+    return result
+
+
+def _send_message(chat_id: int, body: NewMessage, request: Request, x_client_id: str | None):
     owner = owner_id(x_client_id)
     text = body.content.strip()
     if not text:
@@ -145,17 +160,24 @@ def send_message(chat_id: int, body: NewMessage, request: Request, x_client_id: 
         if cached:
             data = json.loads(cached)
             results, checked, used_ai, errors = data["results"], data["checked"], data["ai"], {}
+            interpreted, newest_seen = data.get("interpreted", []), data.get("newest_seen")
         else:
             db.log_search(owner, ip)  # only real searches count toward the limit, cache hits are free
             found = search_all(topic, days)
             if not found["results"] and len(found["errors"]) == len(SOURCES):
                 raise RuntimeError("; ".join(found["errors"].values()))
             results, checked, errors = found["results"], found["checked"], found["errors"]
+            interpreted, newest_seen = found.get("interpreted", []), found.get("newest_seen")
             used_ai = summarize(results)
             for r in results:
                 r.pop("_full", None)
             if not errors:  # never cache a partial result; a retry should try the failed source again
-                db.cache_put(key, json.dumps({"results": results, "checked": checked, "ai": used_ai}))
+                db.cache_put(
+                    key,
+                    json.dumps(
+                        {"results": results, "checked": checked, "ai": used_ai, "interpreted": interpreted, "newest_seen": newest_seen}
+                    ),
+                )
         meta = {
             "topic": topic,
             "days": days,
@@ -163,6 +185,8 @@ def send_message(chat_id: int, body: NewMessage, request: Request, x_client_id: 
             "checked": checked,
             "ai_summaries": used_ai,
             "source_errors": errors,
+            "interpreted": interpreted,
+            "newest_seen": newest_seen,
             "results": results,
         }
         if results:
@@ -170,7 +194,7 @@ def send_message(chat_id: int, body: NewMessage, request: Request, x_client_id: 
         else:
             content = (
                 f'No posts about "{topic}" from the last {days} days '
-                f"(checked {checked} posts, all older). Try a longer window or different words."
+                f"(checked {checked} posts, none matched). Try a longer window or different words."
             )
     except RuntimeError as exc:  # our own search errors are written to be shown to visitors
         meta = {"topic": topic, "days": days, "capped": capped, "results": [], "error": str(exc)}

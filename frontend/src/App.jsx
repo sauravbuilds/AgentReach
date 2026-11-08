@@ -5,6 +5,10 @@ function formatDate(iso) {
   return new Date(iso).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 }
 
+function daysAgo(iso) {
+  return (Date.now() - new Date(iso).getTime()) / 86400000;
+}
+
 function ResultCard({ r }) {
   return (
     <a className="card" href={r.url} target="_blank" rel="noopener noreferrer">
@@ -29,6 +33,12 @@ function Message({ m }) {
       <div className="bubble">{m.content}</div>
       {meta?.days && m.role === "assistant" && (
         <div className="note">Window: last {meta.days} days{meta.checked ? ` · ${meta.checked} posts checked` : ""}</div>
+      )}
+      {meta?.interpreted?.map((i) => (
+        <div key={i.term} className="note"><strong>{i.term}</strong>: {i.meaning}</div>
+      ))}
+      {meta?.newest_seen && daysAgo(meta.newest_seen) > 7 && (
+        <div className="note">Heads up: Reddit results currently run up to {formatDate(meta.newest_seen)}, so very recent posts will not appear yet.</div>
       )}
       {meta?.capped && <div className="note">Searches are capped at the last 90 days, so I used 90.</div>}
       {Object.entries(meta?.source_errors || {}).map(([name, msg]) => (
@@ -173,7 +183,7 @@ export default function App() {
       <main className="main">
         <div className="hint">
           <div>Enter the topic or a description of what you want to find.</div>
-          <div className="hint-timing">Reddit results take about 3 seconds. X / Twitter is still being built and will be added soon.</div>
+          <div className="hint-timing">Reddit results usually take a few seconds. X / Twitter is still being built and will be added soon.</div>
         </div>
 
         <div className="thread">

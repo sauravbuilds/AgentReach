@@ -7,6 +7,8 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from datetime import datetime, timedelta, timezone
 
+from . import glossary
+
 MAX_DAYS = 90
 DEFAULT_DAYS = 90
 FETCH_LIMIT = 50
@@ -89,7 +91,21 @@ def _parse_exa_text(text: str) -> list[dict]:
     return items
 
 
+BUSY_MESSAGE = "The search service is busy right now. Please try again in a minute."
+
+
 def _exa_search(query: str, limit: int = FETCH_LIMIT) -> list[dict]:
+    """One search call. Retries once if the free service says it is busy (it rate-limits bursts)."""
+    try:
+        return _exa_search_once(query, limit)
+    except RuntimeError as exc:
+        if str(exc) != BUSY_MESSAGE:
+            raise
+        time.sleep(1.5)
+        return _exa_search_once(query, limit)
+
+
+def _exa_search_once(query: str, limit: int) -> list[dict]:
     body = json.dumps(
         {
             "jsonrpc": "2.0",
@@ -112,7 +128,7 @@ def _exa_search(query: str, limit: int = FETCH_LIMIT) -> list[dict]:
             raw = resp.read(5_000_000).decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         if exc.code == 429:
-            raise RuntimeError("The search service is busy right now. Please try again in a minute.")
+            raise RuntimeError(BUSY_MESSAGE)
         raise RuntimeError(f"The search service returned an error ({exc.code}).")
     except (urllib.error.URLError, TimeoutError, OSError):
         raise RuntimeError("Could not reach the search service. Please try again.")
@@ -124,7 +140,7 @@ def _exa_search(query: str, limit: int = FETCH_LIMIT) -> list[dict]:
     if "error" in msg:
         text = str(msg["error"].get("message", msg["error"]))
         if re.search(r"429|rate[ _-]?limit|too many requests|quota", text, re.IGNORECASE):
-            raise RuntimeError("The search service is busy right now. Please try again in a minute.")
+            raise RuntimeError(BUSY_MESSAGE)
         raise RuntimeError(f"The search service reported an error: {text[:200]}")
     result = msg.get("result") or {}
     text = "\n".join(c.get("text", "") for c in result.get("content", []) if c.get("type") == "text")
@@ -154,13 +170,39 @@ def _parse_date(value: str | None) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
+def _month_labels(days: int) -> list[str]:
+    """"November 2026", "October 2026", ... for each month the window touches (at most 3)."""
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=days)
+    y, m = now.year, now.month
+    labels = []
+    while True:
+        labels.append(datetime(y, m, 1).strftime("%B %Y"))
+        if (y, m) <= (cutoff.year, cutoff.month) or len(labels) >= 3:
+            return labels
+        y, m = (y, m - 1) if m > 1 else (y - 1, 12)
+
+
+def _fix_text(value: str | None) -> str | None:
+    """Repair text that was UTF-8 but got decoded as Windows-1252 somewhere upstream ("fÃ¸r", "â€“")."""
+    if not value or not re.search(r"[\u00c2\u00c3\u00e2][\u0080-\u00ff\u0152\u0153\u0160\u0161\u0178\u017d\u017e\u0192\u02c6\u02dc\u2013-\u203a\u20ac\u2122]", value):
+        return value
+    for codec in ("cp1252", "latin-1"):
+        try:
+            return value.encode(codec).decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            continue
+    return value
+
+
 def search_reddit(topic: str, days: int) -> dict:
     """Search Reddit for a topic and keep posts from the last `days` days."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    year = datetime.now(timezone.utc).year
-    # Exa has no date filter and ranks by relevance, so we ask twice (plain and
-    # year-biased) and filter by published date afterwards.
-    queries = [f"{topic} site:reddit.com", f"{topic} {year} site:reddit.com"]
+    ctx = glossary.context_for(topic)
+    # Exa has no date filter and ranks by relevance, so we ask once per month the window covers
+    # (naming the month pulls in recent posts) and filter by published date afterwards.
+    # Known terms (RNOR, NRE, ...) get context words so the search finds the right topic.
+    queries = [" ".join(p for p in (topic, ctx.extra_words, label, "site:reddit.com") if p) for label in _month_labels(days)]
 
     def attempt(q: str):
         try:
@@ -182,12 +224,17 @@ def search_reddit(topic: str, days: int) -> dict:
     if not seen and errors:
         raise RuntimeError(errors[0])
 
+    dates = [d for d in (_parse_date(i.get("published_at")) for i in seen.values()) if d]
+    newest_seen = max(dates).isoformat() if dates else None
     results = []
     for url, item in seen.items():
         posted = _parse_date(item.get("published_at"))
         if posted is None or posted < cutoff:
             continue
-        title = (item.get("title") or "").strip() or url
+        title = (_fix_text(item.get("title")) or "").strip() or url
+        text = _fix_text(item.get("text")) or ""
+        if not ctx.keeps(f"{title} {text}"):  # e.g. RNOR must not match "Telenor" or a game character called Noor
+            continue
         subreddit = None
         m = re.search(r"\s:\s(r/\w+)\s*$", title)
         if m:
@@ -203,12 +250,18 @@ def search_reddit(topic: str, days: int) -> dict:
                 "subreddit": subreddit,
                 "author": item.get("author"),
                 "published_at": posted.isoformat(),
-                "summary": _clean(item.get("text", ""), title),
-                "_full": (item.get("text") or "")[:1500],
+                "summary": _clean(text, title),
+                "_full": text[:1500],
             }
         )
     results.sort(key=lambda r: r["published_at"], reverse=True)
-    return {"results": results, "checked": len(seen), "days": days}
+    return {
+        "results": results,
+        "checked": len(seen),
+        "days": days,
+        "interpreted": ctx.interpreted(),
+        "newest_seen": newest_seen,
+    }
 
 
 # label shown in the UI -> search function. More sources (X, ...) plug in here.
@@ -222,6 +275,8 @@ def search_all(topic: str, days: int) -> dict:
     pool.shutdown(wait=False)  # do not block on a source that blows its deadline
     results: list[dict] = []
     checked = 0
+    interpreted: dict[str, str] = {}
+    newest: list[str] = []
     errors: dict[str, str] = {}
     deadline = time.monotonic() + SOURCE_DEADLINE
     for name, fut in futures.items():
@@ -235,5 +290,16 @@ def search_all(topic: str, days: int) -> dict:
             continue
         results.extend(found["results"])
         checked += found["checked"]
+        if found.get("newest_seen"):
+            newest.append(found["newest_seen"])
+        for item in found.get("interpreted", []):
+            interpreted.setdefault(item["term"], item["meaning"])
     results.sort(key=lambda r: r["published_at"], reverse=True)
-    return {"results": results, "checked": checked, "days": days, "errors": errors}
+    return {
+        "results": results,
+        "checked": checked,
+        "days": days,
+        "errors": errors,
+        "interpreted": [{"term": t, "meaning": m} for t, m in interpreted.items()],
+        "newest_seen": max(newest) if newest else None,
+    }
