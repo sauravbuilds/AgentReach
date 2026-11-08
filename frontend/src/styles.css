@@ -54,6 +54,8 @@ body { background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -app
 .note { font-size: 12px; color: var(--muted); }
 .error { color: var(--error); font-size: 14px; }
 
+.also { margin: 6px 4px 0; font-size: 12px; color: var(--muted); }
+.also a { color: var(--accent); }
 .chips { display: flex; gap: 6px; flex-wrap: wrap; }
 .chip { padding: 4px 12px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg); color: var(--text); font: inherit; font-size: 13px; cursor: pointer; }
 .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }

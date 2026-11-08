@@ -13,11 +13,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from _lib import db
-from _lib.search import MAX_DAYS, SOURCES, active_engine, parse_window, search_all
+from _lib.search import MAX_DAYS, SOURCES, active_engine, configure_feed_cache, parse_window, search_all
 from _lib.summarize import summarize
 
 MAX_MESSAGE_CHARS = 500
 CACHE_TTL_SECONDS = 900
+CACHE_VERSION = 4  # bump when search behaviour changes, so answers saved by an older version are not reused
 LIMIT_PER_MINUTE = 6  # searches per visitor per minute
 LIMIT_PER_DAY = 120  # searches per visitor per day
 LIMIT_IP_PER_MINUTE = 20  # searches per IP address per minute (covers visitors who reset their id)
@@ -35,6 +36,7 @@ def _load_env() -> None:
 
 
 _load_env()
+configure_feed_cache(lambda key, max_age: db.cache_get(key, max_age))
 
 app = FastAPI(title="Discussion Finder")
 _origins = [o for o in os.environ.get("FRONTEND_ORIGIN", "").split(",") if o]
@@ -154,7 +156,7 @@ def _send_message(chat_id: int, body: NewMessage, request: Request, x_client_id:
     db.add_message(chat_id, "user", text, title=text[:60] if current_title == "New chat" else None)
 
     topic, days, capped = parse_window(text)
-    key = f"{topic.lower()}|{days}"
+    key = f"v{CACHE_VERSION}|{topic.lower()}|{days}"
     meta: dict
     try:
         cached = db.cache_get(key, CACHE_TTL_SECONDS)
@@ -172,8 +174,10 @@ def _send_message(chat_id: int, body: NewMessage, request: Request, x_client_id:
             used_ai = summarize(results)
             for r in results:
                 r.pop("_full", None)
-            # Never cache a partial result: a retry should try the failed source (or the live feed) again.
-            if not errors and found.get("fresh") != "unavailable":
+            for feed_key, feed_payload in found.get("cache_writes", []):
+                db.cache_put(feed_key, feed_payload)  # shared saved copy of Reddit's feed, see search.configure_feed_cache
+            # Never cache a partial or empty result: a retry should try the failed source (or the live feed) again.
+            if results and not errors and found.get("fresh") != "unavailable":
                 db.cache_put(
                     key,
                     json.dumps(

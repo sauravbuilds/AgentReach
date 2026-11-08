@@ -51,7 +51,22 @@ function Message({ m }) {
           ))}
         </div>
       )}
-      {shown.map((r) => <ResultCard key={r.url} r={r} />)}
+      {shown.map((r) => (
+        <div key={r.url} className="result">
+          <ResultCard r={r} />
+          {r.also_in?.length > 0 && (
+            <div className="also">
+              Also posted in{" "}
+              {r.also_in.map((a, i) => (
+                <span key={a.url}>
+                  {i > 0 && " · "}
+                  <a href={a.url} target="_blank" rel="noopener noreferrer">{a.subreddit || "another subreddit"}</a>
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      ))}
     </div>
   );
 }

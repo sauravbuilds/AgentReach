@@ -234,6 +234,60 @@ def _fix_text(value: str | None) -> str | None:
     return value
 
 
+FEED_TTL = 600  # a saved feed copy this young is used instead of asking Reddit again
+FEED_STALE_TTL = 6 * 3600  # when Reddit refuses us, a copy this old is still better than nothing
+_feed_cache_get = None  # set by the app: (key, max_age_seconds) -> saved text or None
+
+
+def configure_feed_cache(get) -> None:
+    global _feed_cache_get
+    _feed_cache_get = get
+
+
+_FILLER = {
+    "vs", "versus", "and", "or", "the", "a", "an", "of", "for", "in", "on", "to", "my", "is", "are", "was", "what",
+    "how", "do", "does", "i", "me", "about", "with", "from", "after", "can", "should", "need", "help", "any",
+}
+
+
+def _significant_words(text: str) -> list[str]:
+    return [w for w in re.findall(r"[a-z0-9₹]+", text.lower()) if w not in _FILLER and len(w) > 1]
+
+
+def _has_word(word: str, text: str) -> bool:
+    # Drop a plural ending so "taxes" finds "tax" and "rules" finds "rule".
+    stem = word[:-2] if len(word) > 4 and word.endswith("es") else word[:-1] if len(word) > 3 and word.endswith("s") else word
+    return re.search(rf"(?<![a-z0-9]){re.escape(stem)}", text, re.IGNORECASE) is not None
+
+
+def _feed_plan(topic: str, ctx: glossary.Context) -> tuple[str, list[str]]:
+    """What to ask Reddit's feed for, and the extra words each post must contain.
+
+    A known term (RNOR) is asked for on its own so that "rnor tax", "rnor status" and "rnor" all share one saved
+    copy; the other words are then checked here. Other topics ask for their first four meaningful words.
+    """
+    words = _significant_words(topic)
+    if ctx.entries:
+        covered = {w for e in ctx.entries for t in e.terms for w in _significant_words(t)}
+        return ctx.entries[0].terms[0], [w for w in words if w not in covered]
+    return " ".join(words[:4]) or topic, []
+
+
+def _group_crossposts(results: list[dict]) -> list[dict]:
+    """The same post shared to several subreddits becomes one result with an `also_in` list."""
+    grouped: dict[str, dict] = {}
+    out: list[dict] = []
+    for r in results:  # newest first, so the newest copy is the one shown
+        key = re.sub(r"[^a-z0-9]+", " ", r["title"].lower()).strip()
+        if len(key) > 12 and key in grouped:
+            grouped[key]["also_in"].append({"subreddit": r["subreddit"], "url": r["url"]})
+            continue
+        r["also_in"] = []
+        grouped[key] = r
+        out.append(r)
+    return out
+
+
 def search_reddit(topic: str, days: int) -> dict:
     """Search Reddit for a topic and keep posts from the last `days` days."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
@@ -250,27 +304,47 @@ def search_reddit(topic: str, days: int) -> dict:
         except Exception as exc:  # keep going if one query fails
             return [], str(exc), None
 
-    def fresh() -> tuple[list[dict], str]:
-        """Current posts straight from Reddit's feed, when it lets us in. Never raises.
-        The status is "off", "ok" or "unavailable"."""
+    def fresh() -> tuple[list[dict], str, tuple[str, str] | None]:
+        """Current posts from Reddit's feed. Never raises. Returns (posts, status, cache_write).
+
+        One feed request is made per base term and kept as a shared saved copy, because Reddit allows very few
+        requests. Status: "off", "ok" (live or recent saved copy), "stale" (older saved copy) or "unavailable".
+        """
         if not feed.enabled():
-            return [], "off"
+            return [], "off", None
+        base, must = _feed_plan(topic, ctx)
+        key = f"feed|{base.lower()}"
+        write = None
         try:
-            return feed.search(topic, days), "ok"
-        except feed.FeedUnavailable:
-            return [], "unavailable"
+            saved = _feed_cache_get(key, FEED_TTL) if _feed_cache_get else None
+            if saved:
+                items, status = json.loads(saved), "ok"
+            else:
+                try:
+                    items, status = feed.fetch(base), "ok"
+                    write = (key, json.dumps(items))
+                except feed.FeedUnavailable:
+                    old = _feed_cache_get(key, FEED_STALE_TTL) if _feed_cache_get else None
+                    if not old:
+                        return [], "unavailable", None
+                    items, status = json.loads(old), "stale"
+        except Exception:  # a storage or format problem must never break the search
+            return [], "unavailable", None
+        items = [i for i in items if all(_has_word(w, f"{i.get('title', '')} {i.get('text', '')}") for w in must)]
+        return items, status, write
 
     with ThreadPoolExecutor(max_workers=len(queries) + 1) as pool:
         fresh_future = pool.submit(fresh)
         outcomes = list(pool.map(attempt, queries))
-        fresh_items, fresh_status = fresh_future.result()
+        fresh_items, fresh_status, fresh_write = fresh_future.result()
     seen: dict[str, dict] = {}
     for item in fresh_items:  # first, so the current copy of a post wins when both sources return it
         url = item.get("url")
         if url and _REDDIT_URL_RE.match(url):
             seen.setdefault(url, item)
     errors = [err for _, err, _ in outcomes if err]
-    engines = sorted({e for _, _, e in outcomes if e} | ({"Reddit feed"} if fresh_items else set()))
+    feed_label = {"ok": "Reddit feed", "stale": "Reddit feed (saved copy)"}.get(fresh_status) if fresh_items else None
+    engines = sorted({e for _, _, e in outcomes if e} | ({feed_label} if feed_label else set()))
     for items, err, _ in outcomes:
         if err:
             continue
@@ -313,13 +387,14 @@ def search_reddit(topic: str, days: int) -> dict:
         )
     results.sort(key=lambda r: r["published_at"], reverse=True)
     return {
-        "results": results,
+        "results": _group_crossposts(results),
         "checked": len(seen),
         "days": days,
         "interpreted": ctx.interpreted(),
         "newest_seen": newest_seen,
         "engine": " + ".join(engines) if engines else None,
         "fresh": fresh_status,
+        "cache_writes": [fresh_write] if fresh_write else [],
     }
 
 
@@ -338,6 +413,7 @@ def search_all(topic: str, days: int) -> dict:
     newest: list[str] = []
     engines: list[str] = []
     fresh_states: list[str] = []
+    cache_writes: list[tuple[str, str]] = []
     errors: dict[str, str] = {}
     deadline = time.monotonic() + SOURCE_DEADLINE
     for name, fut in futures.items():
@@ -356,6 +432,7 @@ def search_all(topic: str, days: int) -> dict:
         if found.get("engine"):
             engines.append(found["engine"])
         fresh_states.append(found.get("fresh", "off"))
+        cache_writes.extend(found.get("cache_writes", []))
         for item in found.get("interpreted", []):
             interpreted.setdefault(item["term"], item["meaning"])
     results.sort(key=lambda r: r["published_at"], reverse=True)
@@ -368,4 +445,5 @@ def search_all(topic: str, days: int) -> dict:
         "newest_seen": max(newest) if newest else None,
         "engine": " + ".join(dict.fromkeys(engines)) if engines else None,
         "fresh": "unavailable" if "unavailable" in fresh_states else ("ok" if "ok" in fresh_states else "off"),
+        "cache_writes": cache_writes,  # the caller stores these; searching itself never writes to the database
     }

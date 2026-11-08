@@ -207,6 +207,9 @@ ENTRIES: tuple[Entry, ...] = (
 _STOP = {"OR", "AND", "NOT", "THE", "FOR", "TO", "IN", "ON", "AT", "OF", "IS", "IT", "AS", "BY", "IF", "SO", "NO", "A", "I", "VS"}
 
 
+_INSIDE_WORD_MARKUP = re.compile(r"(?<=[A-Za-z])[*_]+(?=[A-Za-z])")
+
+
 @dataclass(frozen=True)
 class Context:
     entries: tuple[Entry, ...]
@@ -222,6 +225,7 @@ class Context:
         """Does this result text really talk about the term the visitor asked about?"""
         if not self.filtering:
             return True
+        text = _INSIDE_WORD_MARKUP.sub("", text)  # "Gove**rnor**" is the word "Governor", not "rnor"
         for e in self.entries:
             if e.anchors and not any(a.search(text) for a in e.anchors):
                 continue

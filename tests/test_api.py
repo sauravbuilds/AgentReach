@@ -1,3 +1,4 @@
+import json
 import pytest
 from fastapi.testclient import TestClient
 
@@ -206,3 +207,35 @@ def test_results_are_not_cached_when_the_live_feed_was_refused(client, monkeypat
     assert len(calls) == 2
     _send(client, cid, "rnor last 7 days")  # the second answer was complete, so now it is cached
     assert len(calls) == 2
+
+
+def test_empty_answers_are_never_cached(client, monkeypatch):
+    calls = []
+
+    def nothing(topic, days):
+        calls.append(1)
+        return {"results": [], "checked": 5, "days": days, "errors": {}, "fresh": "ok"}
+
+    monkeypatch.setattr(index, "search_all", nothing)
+    cid = _chat(client)
+    _send(client, cid, "rnor last 7 days")
+    _send(client, cid, "rnor last 7 days")
+    assert len(calls) == 2  # an empty answer is searched again every time, so it can never get stuck
+
+
+def test_answers_saved_by_an_older_version_are_not_reused(client):
+    old_key = "rnor|7"  # the key format before cache versions existed
+    db.cache_put(old_key, json.dumps({"results": [], "checked": 50, "ai": False}))
+    cid = _chat(client)
+    _send(client, cid, "rnor last 7 days")
+    assert len(client.calls) == 1  # searched fresh instead of serving the old empty answer
+
+
+def test_feed_copies_returned_by_a_search_are_stored_for_everyone(client, monkeypatch):
+    monkeypatch.setattr(
+        index, "search_all",
+        lambda t, d: {"results": [_result()], "checked": 1, "days": d, "errors": {}, "fresh": "ok", "cache_writes": [("feed|rnor", "[1]")]},
+    )
+    cid = _chat(client)
+    _send(client, cid, "rnor")
+    assert db.cache_get("feed|rnor", 60) == "[1]"
