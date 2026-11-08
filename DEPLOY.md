@@ -23,7 +23,7 @@ For whoever hosts or develops the app. Visitors only need the [README](README.md
 Optional environment variables (Project Settings, Environment Variables): `ANTHROPIC_API_KEY` for AI summaries (costs money per search), `SUMMARY_MODEL`.
 
 ## Known limits to be aware of
-- **Freshness.** The free Exa index of Reddit lags by weeks (at the time of writing its newest posts were about five weeks old). Short windows such as "last 7 days" will often return nothing. The app tells visitors when this applies. Fixing it needs a live source, such as Reddit's official API with an app registered at reddit.com/prefs/apps.
+- **Freshness.** The free Exa index of Reddit lags by weeks (at the time of writing its newest posts were about five weeks old). Short windows such as "last 7 days" will often return nothing. Fixing it needs a live source, such as Reddit's official API with an app registered at reddit.com/prefs/apps.
 - **Rate limits.** The free Exa endpoint refuses bursts. Each search makes at most 3 calls and retries once when it is told it is busy. Heavy traffic needs a paid Exa key or another source.
 - **No accounts.** History is per browser; it cannot follow a person across devices.
 - **X / Twitter** is not part of the hosted app. See `ROADMAP.md`.

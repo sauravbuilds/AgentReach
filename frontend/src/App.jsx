@@ -5,10 +5,6 @@ function formatDate(iso) {
   return new Date(iso).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 }
 
-function daysAgo(iso) {
-  return (Date.now() - new Date(iso).getTime()) / 86400000;
-}
-
 function ResultCard({ r }) {
   return (
     <a className="card" href={r.url} target="_blank" rel="noopener noreferrer">
@@ -37,9 +33,6 @@ function Message({ m }) {
       {meta?.interpreted?.map((i) => (
         <div key={i.term} className="note"><strong>{i.term}</strong>: {i.meaning}</div>
       ))}
-      {meta?.newest_seen && daysAgo(meta.newest_seen) > 7 && (
-        <div className="note">Heads up: Reddit results currently run up to {formatDate(meta.newest_seen)}, so very recent posts will not appear yet.</div>
-      )}
       {meta?.capped && <div className="note">Searches are capped at the last 90 days, so I used 90.</div>}
       {Object.entries(meta?.source_errors || {}).map(([name, msg]) => (
         <div key={name} className="note">Could not search {name}: {msg}</div>

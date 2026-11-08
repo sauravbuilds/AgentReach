@@ -21,7 +21,7 @@ Terms it knows include: RNOR, ROR, NRI, OCI, PIO, NRE, NRO, FCNR, FEMA, DTAA, TR
 ## Good to know
 
 - **Reddit only for now.** X / Twitter is being built and will be added later.
-- **Results can lag behind Reddit.** The search source updates with a delay, so the newest posts may not show up yet. A note appears on a search when this applies.
+- **Results can lag behind Reddit.** The search source updates with a delay, so the newest posts may not show up yet.
 - **Your history is private to your browser.** There is no account or login. Chats are tied to the browser you use, so clearing your browser data or switching to another device starts a fresh history.
 - **Searches are limited** so the service stays available for everyone: a handful per minute and a daily cap per person. Repeating a search you or someone else just made is instant and does not count.
 - **Descriptions are excerpts.** They come from the post text and are not verified. For tax, legal or money decisions, read the full discussion and check with a qualified professional. Reddit comments are opinions, not advice.
